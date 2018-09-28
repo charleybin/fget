@@ -1,8 +1,6 @@
 package utils
 
 import (
-	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -28,88 +26,7 @@ const (
 
 const (
 	ERROR_MSG_SUCCESS = "success"
-
-	ERROR_MSG_INTERNAL_SERVER = "服务器内部错误"
-	ERROR_MSG_PARAM_NULL      = "没有 '%s' 参数"
-	ERROR_MSG_PARAM_ILLEGAL   = "参数 '%s' 不合法"
 )
-
-type ResponseJson struct {
-	Code int
-	Msg  string
-	Data interface{}
-}
-
-type UploadResult struct {
-}
-
-func MakeResponseJson(code int, msg string, data interface{}) *ResponseJson {
-	return &ResponseJson{code, msg, data}
-}
-
-func MakeSuccJson(data interface{}) *ResponseJson {
-	return MakeResponseJson(ERROR_CODE_SUCCESS, ERROR_MSG_SUCCESS, data)
-}
-
-func ResponseSucc(w http.ResponseWriter, data interface{}) {
-	response_json := MakeSuccJson(data)
-	response, err := json.Marshal(response_json)
-	if err != nil {
-		httpLog.Error("http_util", err.Error())
-		return
-	}
-
-	w.Write(response)
-}
-
-func MakeInternalErrJson() *ResponseJson {
-	return MakeResponseJson(ERROR_CODE_INTERNAL_SERVER, ERROR_MSG_INTERNAL_SERVER, "")
-}
-
-func ResponseInternalErr(w http.ResponseWriter) {
-	response_json := MakeInternalErrJson()
-	response, err := json.Marshal(response_json)
-	if err != nil {
-		httpLog.Error("http_util", err.Error())
-		return
-	}
-
-	w.Write(response)
-}
-
-func MakeParamIllegalErrJson(param_name string) *ResponseJson {
-	return MakeResponseJson(ERROR_CODE_PARAM_ILLEGAL, fmt.Sprintf(ERROR_MSG_PARAM_ILLEGAL, param_name), "")
-}
-
-func ResponseParamIllegalErr(w http.ResponseWriter, param_name string) {
-	response_json := MakeParamIllegalErrJson(param_name)
-	response, err := json.Marshal(response_json)
-	if err != nil {
-		httpLog.Error("http_util", err.Error())
-		return
-	}
-
-	w.Write(response)
-}
-
-func MakeParamNullErrJson(param_name string) *ResponseJson {
-	return MakeResponseJson(ERROR_CODE_PARAM_NULL, fmt.Sprintf(ERROR_MSG_PARAM_NULL, param_name), "")
-}
-
-func ResponseParamNullErr(w http.ResponseWriter, param_name string) {
-	response_json := MakeParamNullErrJson(param_name)
-	response, err := json.Marshal(response_json)
-	if err != nil {
-		httpLog.Error("http_util", err.Error())
-		return
-	}
-
-	w.Write(response)
-}
-
-func ResponseNotFound(w http.ResponseWriter) {
-	w.WriteHeader(404)
-}
 
 func HttpGet(url string, headers map[string]string) (*http.Response, error) {
 
