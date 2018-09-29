@@ -37,12 +37,12 @@ type RangePart struct {
 	Start       int64
 	End         int64
 	FileName    string
+	CurrentSize int64
 }
 
 type ProgressPart struct {
-	Part       RangePart
+	Part       *RangePart
 	CH         (chan int64)
-	CurentSize int64
 }
 
 func getFileLength(url string) (int64, string) {
@@ -87,12 +87,12 @@ func getFileLength(url string) (int64, string) {
 	return resp.ContentLength, fileName
 }
 
-func getRange(urlAddr string, totalLength int64, split int, fileName string) ([]RangePart, int) {
+func getRange(urlAddr string, totalLength int64, split int, fileName string) ([]*RangePart, int) {
 	splitCount := int64(split)
 
-	if totalLength%splitCount == 0 {
-		totalLength = totalLength
-	}
+	// if totalLength%splitCount == 0 {
+	//	totalLength = totalLength
+	// }
 	if totalLength < bufferSize {
 		split = 1
 		splitCount = int64(split)
@@ -106,7 +106,7 @@ func getRange(urlAddr string, totalLength int64, split int, fileName string) ([]
 		split = split + 1
 	}
 	//	dataList := make([]RangePart, split)
-	dataList := []RangePart{}
+	dataList := []*RangePart{}
 
 	for i := 0; i < split; i++ {
 		partBegin := averageLen * int64(i)
@@ -122,7 +122,7 @@ func getRange(urlAddr string, totalLength int64, split int, fileName string) ([]
 			End:         partEnd,
 			FileName:    fmt.Sprintf("%s_%d", fileName, i),
 		}
-		dataList = append(dataList, data)
+		dataList = append(dataList, &data)
 
 		mainLog.Debug("Begin:", data.Start, ",partEnd:", data.End, ",fileName:", data.FileName)
 	}
@@ -159,8 +159,8 @@ func CopyBuffer(ch chan<- int64, dst io.Writer, src io.Reader, buf []byte) (writ
 	return written, err
 }
 
-func downloadFileByRange(segSize chan<- int64, partInfo RangePart) error {
-	rangeValue := fmt.Sprintf("bytes=%d-%d", partInfo.Start, partInfo.End)
+func downloadFileByRange(segSize chan<- int64, partInfo *RangePart) error {
+	rangeValue := fmt.Sprintf("bytes=%d-%d", partInfo.Start + partInfo.CurrentSize, partInfo.End)
 	headers := make(map[string]string, 5)
 	headers["Range"] = rangeValue
 
@@ -173,32 +173,42 @@ func downloadFileByRange(segSize chan<- int64, partInfo RangePart) error {
 	}
 	defer resp.Body.Close()
 
-	cleanExistFile(partInfo.FileName)
+	if partInfo.CurrentSize == 0 {
+		cleanExistFile(partInfo.FileName)
+	}
 
-	file, err := os.Create(partInfo.FileName)
+
+	file, err := os.OpenFile(partInfo.FileName, os.O_WRONLY|os.O_APPEND, 0755)
 	if err != nil {
-		return err
+		fmt.Println("\nOpenFile Error:", err)
+		if partInfo.CurrentSize == 0 {
+			cfile, cerr := os.Create(partInfo.FileName)
+			if cerr != nil {
+				fmt.Println("\nCreateFile Error:", err)
+				return cerr
+			}
+			file = cfile
+		} else {
+			return err
+		}
 	}
 	//	defer file.Close()
 
 	byteData := make([]byte, bufferSize)
 
-	readedLength := int64(0)
-	totalLength := partInfo.End - partInfo.Start
-	for readedLength < totalLength {
+	for partInfo.CurrentSize < partInfo.End {
 		n, err := CopyBuffer(segSize, file, resp.Body, byteData)
+		if n > 0 {
+			partInfo.CurrentSize = partInfo.CurrentSize + n
+			segSize <- n
+			mainLog.Debug("readedLength:", partInfo.CurrentSize, ",totalLength:", partInfo.End)
+		}
 		if err != nil {
+			fmt.Println("CopyBuffer error:", err)
 			file.Close()
 			segSize <- CHAN_CODE_ERR
 			return err
 		}
-		readedLength = readedLength + n
-		segSize <- n
-		mainLog.Debug("readedLength:", readedLength)
-		//		if *progress {
-		//			pct := int64(readedLength * 100 / totalLength)
-		//			fmt.Fprintf(os.Stdout, "%s,%3d", partInfo.FileName, pct)
-		//		}
 	}
 
 	file.Close()
@@ -212,10 +222,11 @@ func cleanExistFile(fn string) {
 	if terr == nil {
 		tfp.Close()
 		os.Remove(fn)
+		fmt.Println("\ncleanExistFile:", fn)
 	}
 }
 
-func combineFiles(finalName string, rangeList []RangePart, listSize int) error {
+func combineFiles(finalName string, rangeList []*RangePart, listSize int) error {
 	if listSize == 1 {
 		return os.Rename(rangeList[0].FileName, finalName)
 	}
@@ -241,7 +252,7 @@ func combineFiles(finalName string, rangeList []RangePart, listSize int) error {
 	for _, rangeSegement := range rangeList {
 		err := os.Remove(rangeSegement.FileName)
 		if err != nil {
-			fmt.Println("delete file error:", rangeSegement.FileName, err)
+			fmt.Println("\ndelete file error:", rangeSegement.FileName, err)
 		}
 	}
 	return nil
@@ -265,29 +276,34 @@ func getFile(urlAddr string, split int) (error, string) {
 
 	mainLog.Debug("fileName:", fileName, ",length:", length, ",listSize:", listSize, "rangeList:", rangeList)
 
-	chList := []*ProgressPart{}
+	chList := []ProgressPart{}
 
 	for _, rangeSegement := range rangeList {
 		ch := make(chan int64)
 		go downloadFileByRange(ch, rangeSegement)
 		prog := ProgressPart{CH: ch, Part: rangeSegement}
-		chList = append(chList, &prog)
+		chList = append(chList, prog)
 	}
 
 	downloadSize := int64(0)
 	for downloadSize < length && len(chList) > 0 {
 		for n, prog := range chList {
 			loadedSize := <-prog.CH
-			if loadedSize < 0 {
+			if loadedSize == CHAN_CODE_SUCC {
 				chList = append(chList[:n], chList[n+1:]...)
+				fmt.Println("\ntask:", prog.Part.ThreadIndex, ",end with code:", loadedSize)
+				break
+			} else if loadedSize == CHAN_CODE_ERR {
+				fmt.Println("\ntask:", prog.Part.ThreadIndex, ",end with code:", loadedSize)
+				go downloadFileByRange(prog.CH, prog.Part)
 				break
 			} else {
 				downloadSize = downloadSize + loadedSize
-				prog.CurentSize = prog.CurentSize + loadedSize
+				// prog.CurentSize = prog.CurentSize + loadedSize
 				totalLength := prog.Part.End - prog.Part.Start
 
 				if *progress {
-					pct := int64(prog.CurentSize * 100 / totalLength)
+					pct := int64(prog.Part.CurrentSize * 100 / totalLength)
 					fmt.Fprintf(os.Stdout, "[%s:%3d%s]\t", prog.Part.FileName, pct, "%")
 				}
 			}
@@ -312,10 +328,10 @@ func getFile(urlAddr string, split int) (error, string) {
 
 func checkDownloadUrl() {
 	if *downloadUrl == "" {
-		//		mainLog.Error("please specify Download URL through -u parameter")
-		//		printHelp()
-		//		os.Exit(1)
-		*downloadUrl = "http://106.12.24.114/files/nginx.tar.gz"
+		mainLog.Error("please specify Download URL through -u parameter")
+		printHelp()
+		os.Exit(1)
+		// *downloadUrl = "http://106.12.24.114/files/nginx.tar.gz"
 	}
 }
 
